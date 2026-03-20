@@ -2,7 +2,7 @@
  * Memory Database API write module for email messages.
  *
  * Mirrors openclaw-anthropic-ingestor api-writer.ts — identical logic,
- * only the source field changes to 'email'.
+ * only the source field changes to 'gmail'.
  */
 
 /** Conflict mode for the Memory Database API. */
@@ -25,7 +25,7 @@ export function isApiMode(): boolean {
 }
 
 export type ApiMessagePayload = {
-  source: 'email';
+  source: 'gmail';
   sender: string;
   recipient: string;
   content: string;

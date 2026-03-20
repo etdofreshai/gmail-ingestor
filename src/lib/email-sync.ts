@@ -209,7 +209,7 @@ async function normalizeEmail(
   const attachmentCount = parsed.attachments?.length ?? 0;
 
   const payload: ApiMessagePayload = {
-    source: 'email',
+    source: 'gmail',
     sender,
     recipient,
     content,
