@@ -2,16 +2,17 @@
  * email-sync.ts
  *
  * Core sync logic: fetches emails from IMAP and writes them to the
- * memory database via the API writer.
+ * memory database via the API writer, including attachment download/ingest.
  */
 
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
-import { simpleParser } from 'mailparser';
+import { simpleParser, type Attachment as MailAttachment } from 'mailparser';
 import { createImapClient } from '../imap';
 import {
   writeMessagesViaApi,
   type ApiMessagePayload,
   type ApiWriteResult,
+  type EmailAttachment,
 } from './api-writer';
 
 export interface SyncOptions {
@@ -23,6 +24,10 @@ export interface SyncOptions {
   limit?: number;
   /** Log progress to console. */
   verbose?: boolean;
+  /** Whether to download and ingest attachments. Default: true */
+  includeAttachments?: boolean;
+  /** Max attachment size in bytes to download. Default: 25MB */
+  maxAttachmentSize?: number;
 }
 
 export interface SyncResult {
@@ -31,20 +36,8 @@ export interface SyncResult {
   updated: number;
   skipped: number;
   attachmentsSeen: number;
+  attachmentsIngested: number;
   mailbox: string;
-}
-
-interface EmailEnvelope {
-  uid: number;
-  flags: Set<string>;
-  envelope: {
-    date?: Date;
-    subject?: string;
-    from?: Array<{ name?: string; address?: string }>;
-    to?: Array<{ name?: string; address?: string }>;
-    cc?: Array<{ name?: string; address?: string }>;
-    messageId?: string;
-  };
 }
 
 /**
@@ -55,18 +48,20 @@ interface EmailEnvelope {
  * 2. Search for emails (optionally filtered by date)
  * 3. Fetch each email's full source
  * 4. Parse with mailparser
- * 5. Normalize to memory DB format
- * 6. Write via API
+ * 5. Normalize to memory DB format + extract attachments
+ * 6. Write via API (with attachment ingest)
  */
 export async function syncEmails(options: SyncOptions = {}): Promise<SyncResult> {
   const mailbox = options.mailbox ?? '[Gmail]/All Mail';
   const sinceMs = options.sinceMs;
   const limit = options.limit;
   const verbose = options.verbose ?? false;
+  const includeAttachments = options.includeAttachments !== false;
+  const maxAttachmentSize = options.maxAttachmentSize ?? 25 * 1024 * 1024; // 25MB
 
   const log = verbose ? console.log.bind(console) : () => {};
 
-  log(`[email-sync] Starting sync for mailbox: ${mailbox}`);
+  log(`[email-sync] Starting sync for mailbox: ${mailbox} (attachments: ${includeAttachments})`);
 
   const client = await createImapClient();
 
@@ -93,7 +88,7 @@ export async function syncEmails(options: SyncOptions = {}): Promise<SyncResult>
       log(`[email-sync] Found ${uids.length} emails matching criteria`);
 
       if (uids.length === 0) {
-        return { fetched: 0, inserted: 0, updated: 0, skipped: 0, attachmentsSeen: 0, mailbox };
+        return { fetched: 0, inserted: 0, updated: 0, skipped: 0, attachmentsSeen: 0, attachmentsIngested: 0, mailbox };
       }
 
       // Sort UIDs descending (newest first) for limit to take newest
@@ -107,12 +102,12 @@ export async function syncEmails(options: SyncOptions = {}): Promise<SyncResult>
 
       // Process in batches
       const BATCH_SIZE = 50;
-      let totalResult: ApiWriteResult = { inserted: 0, updated: 0, skipped: 0, attachmentsSeen: 0 };
+      let totalResult: ApiWriteResult = { inserted: 0, updated: 0, skipped: 0, attachmentsSeen: 0, attachmentsIngested: 0 };
       let fetched = 0;
 
       for (let i = 0; i < uids.length; i += BATCH_SIZE) {
         const batchUids = uids.slice(i, i + BATCH_SIZE);
-        const payloads: Array<{ payload: ApiMessagePayload; attachmentCount: number }> = [];
+        const payloads: Array<{ payload: ApiMessagePayload; attachmentCount: number; attachments?: EmailAttachment[] }> = [];
 
         // Fetch full source for each email in the batch
         for await (const msg of client.fetch(batchUids, {
@@ -122,7 +117,7 @@ export async function syncEmails(options: SyncOptions = {}): Promise<SyncResult>
           uid: true,
         }, { uid: true })) {
           try {
-            const normalized = await normalizeEmail(msg, mailbox);
+            const normalized = await normalizeEmail(msg, mailbox, includeAttachments, maxAttachmentSize);
             if (normalized) {
               payloads.push(normalized);
               fetched++;
@@ -139,17 +134,19 @@ export async function syncEmails(options: SyncOptions = {}): Promise<SyncResult>
           totalResult.updated += batchResult.updated;
           totalResult.skipped += batchResult.skipped;
           totalResult.attachmentsSeen += batchResult.attachmentsSeen;
+          totalResult.attachmentsIngested += batchResult.attachmentsIngested;
 
           log(`[email-sync] Batch ${Math.floor(i / BATCH_SIZE) + 1}: ` +
             `fetched=${payloads.length} inserted=${batchResult.inserted} ` +
-            `updated=${batchResult.updated} skipped=${batchResult.skipped}`);
+            `updated=${batchResult.updated} skipped=${batchResult.skipped} ` +
+            `attachments=${batchResult.attachmentsSeen} ingested=${batchResult.attachmentsIngested}`);
         }
       }
 
       log(`[email-sync] Sync complete for ${mailbox}: ` +
         `fetched=${fetched} inserted=${totalResult.inserted} ` +
         `updated=${totalResult.updated} skipped=${totalResult.skipped} ` +
-        `attachments=${totalResult.attachmentsSeen}`);
+        `attachments=${totalResult.attachmentsSeen} ingested=${totalResult.attachmentsIngested}`);
 
       return {
         fetched,
@@ -176,12 +173,15 @@ function buildSearchCriteria(sinceMs?: number): Record<string, unknown> {
 }
 
 /**
- * Normalize a fetched IMAP message into a memory DB payload.
+ * Normalize a fetched IMAP message into a memory DB payload,
+ * including extracting attachment file data.
  */
 async function normalizeEmail(
   msg: FetchMessageObject,
-  mailbox: string
-): Promise<{ payload: ApiMessagePayload; attachmentCount: number } | null> {
+  mailbox: string,
+  includeAttachments: boolean,
+  maxAttachmentSize: number
+): Promise<{ payload: ApiMessagePayload; attachmentCount: number; attachments?: EmailAttachment[] } | null> {
   if (!msg.source) {
     return null;
   }
@@ -206,7 +206,43 @@ async function normalizeEmail(
   const timestamp = date ? new Date(date).toISOString() : new Date().toISOString();
   const externalId = `gmail:${mailbox}:${uid}`;
 
-  const attachmentCount = parsed.attachments?.length ?? 0;
+  const rawAttachments = parsed.attachments ?? [];
+  const attachmentCount = rawAttachments.length;
+
+  // Extract attachment data if enabled
+  let attachments: EmailAttachment[] | undefined;
+  if (includeAttachments && rawAttachments.length > 0) {
+    attachments = [];
+    for (const att of rawAttachments) {
+      try {
+        // Skip attachments that are too large
+        if (att.size && att.size > maxAttachmentSize) {
+          console.log(`[email-sync] Skipping attachment "${att.filename}" (${att.size} bytes) — exceeds max size`);
+          continue;
+        }
+
+        // att.content is a Buffer from mailparser
+        if (att.content && att.content.length > 0) {
+          attachments.push({
+            filename: att.filename || `attachment-${uid}-${attachments.length}`,
+            contentType: att.contentType || 'application/octet-stream',
+            content: att.content,
+            size: att.size || att.content.length,
+          });
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[email-sync] Error extracting attachment "${att.filename}" for UID ${uid}: ${errMsg}`);
+      }
+    }
+  }
+
+  // Build attachment metadata for the metadata field
+  const attachmentMeta = rawAttachments.map((att) => ({
+    filename: att.filename ?? null,
+    contentType: att.contentType ?? null,
+    size: att.size ?? null,
+  }));
 
   const payload: ApiMessagePayload = {
     source: 'gmail',
@@ -224,8 +260,9 @@ async function normalizeEmail(
       uid,
       flags,
       messageId: messageId ?? null,
+      attachments: attachmentMeta.length > 0 ? attachmentMeta : undefined,
     },
   };
 
-  return { payload, attachmentCount };
+  return { payload, attachmentCount, attachments };
 }

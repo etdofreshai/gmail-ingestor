@@ -79,10 +79,11 @@ router.post('/sync', async (req: Request, res: Response) => {
     updatedCount: 0,
     skippedCount: 0,
     attachmentsSeen: 0,
+    attachmentsIngested: 0,
   });
 
   let syncError: string | null = null;
-  let syncResult: { fetched: number; inserted: number; updated: number; skipped: number; attachmentsSeen: number } | null = null;
+  let syncResult: { fetched: number; inserted: number; updated: number; skipped: number; attachmentsSeen: number; attachmentsIngested: number } | null = null;
 
   const { promise } = enqueue(`manual:${run.runId}`, `manual sync ${mailbox}`, async () => {
     currentSyncStatus = 'running';
@@ -103,6 +104,7 @@ router.post('/sync', async (req: Request, res: Response) => {
         updatedCount: result.updated,
         skippedCount: result.skipped,
         attachmentsSeen: result.attachmentsSeen,
+        attachmentsIngested: result.attachmentsIngested,
       });
       syncResult = result;
     } catch (err: unknown) {

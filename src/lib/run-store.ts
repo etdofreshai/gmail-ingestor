@@ -21,6 +21,7 @@ export interface RunLog {
   updatedCount: number;
   skippedCount: number;
   attachmentsSeen: number;
+  attachmentsIngested?: number;
 }
 
 const DATA_ROOT = process.env.DATA_DIR

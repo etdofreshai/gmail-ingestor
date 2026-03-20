@@ -99,6 +99,7 @@ async function executeJob(job: Job, overrides?: JobRunOverrides): Promise<void> 
       updatedCount: result.updated,
       skippedCount: result.skipped,
       attachmentsSeen: result.attachmentsSeen,
+      attachmentsIngested: result.attachmentsIngested,
     });
 
     console.log(
