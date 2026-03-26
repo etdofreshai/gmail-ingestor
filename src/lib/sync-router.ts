@@ -244,6 +244,8 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     cadencePreset: cadencePresetRaw,
     intervalMinutes: intervalMinutesRaw,
     enabled,
+    startDate,
+    lastSyncedAt,
   } = req.body as {
     name?: string;
     mailbox?: string;
@@ -252,6 +254,8 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     cadencePreset?: string | null;
     intervalMinutes?: number;
     enabled?: boolean;
+    startDate?: string | null;
+    lastSyncedAt?: string | null;
   };
 
   const jobId = String(req.params.id);
@@ -286,6 +290,13 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
     }
   }
 
+  if (startDate !== undefined) {
+    patch.startDate = startDate === null || startDate === '' ? undefined : String(startDate).trim() || undefined;
+  }
+  if (lastSyncedAt !== undefined) {
+    patch.lastSyncedAt = lastSyncedAt === null || lastSyncedAt === '' ? undefined : String(lastSyncedAt).trim() || undefined;
+  }
+
   const updated = await updateJob(jobId, patch as Parameters<typeof updateJob>[1]);
   if (!updated) { res.status(404).json({ error: 'Job not found.' }); return; }
 
@@ -293,6 +304,13 @@ router.patch('/jobs/:id', async (req: Request, res: Response) => {
   else unscheduleJob(updated.id);
 
   res.json(updated);
+});
+
+router.post('/jobs/:id/reset-sync', async (req: Request, res: Response) => {
+  const jobId = String(req.params.id);
+  const job = await updateJob(jobId, { lastSyncedAt: undefined } as Parameters<typeof updateJob>[1]);
+  if (!job) { res.status(404).json({ error: 'Job not found.' }); return; }
+  res.json(job);
 });
 
 router.delete('/jobs/:id', async (req: Request, res: Response) => {

@@ -16,7 +16,9 @@ export interface Job {
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
+  lastSyncedAt?: string;  // ISO timestamp of last SUCCESSFUL sync
   lastStatus?: 'success' | 'error' | 'running';
+  startDate?: string;
 }
 
 const DATA_ROOT = process.env.DATA_DIR
