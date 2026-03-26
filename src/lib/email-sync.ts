@@ -7,6 +7,7 @@
 
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
 import { simpleParser, type Attachment as MailAttachment } from 'mailparser';
+import { convert as htmlToText } from 'html-to-text';
 import { createImapClient } from '../imap';
 import {
   writeMessagesViaApi,
@@ -200,8 +201,9 @@ async function normalizeEmail(
   const sender = from?.[0]?.address ?? from?.[0]?.name ?? 'unknown';
   const recipient = to?.map(t => t.address).filter(Boolean).join(', ') || 'unknown';
 
-  const textBody = parsed.text ?? '';
+  const textBody = parsed.text || (parsed.html ? htmlToText(parsed.html, { wordwrap: 120 }) : '');
   const content = `Subject: ${subject}\n\n${textBody}`;
+  const htmlBody = parsed.html || undefined;
 
   const timestamp = date ? new Date(date).toISOString() : new Date().toISOString();
   const externalId = `gmail:${mailbox}:${uid}`;
@@ -261,6 +263,7 @@ async function normalizeEmail(
       flags,
       messageId: messageId ?? null,
       attachments: attachmentMeta.length > 0 ? attachmentMeta : undefined,
+      htmlBody,
     },
   };
 
