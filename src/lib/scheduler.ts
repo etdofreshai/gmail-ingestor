@@ -4,7 +4,7 @@
  * Manages recurring email sync jobs. Fires at UTC-boundary-aligned times.
  */
 
-import { loadJobs, updateJob, type Job } from './job-store';
+import { createJob, loadJobs, updateJob, type Job } from './job-store';
 import { createRun, updateRun } from './run-store';
 import { syncEmails } from './email-sync';
 import { isApiMode } from './api-writer';
@@ -188,11 +188,48 @@ export function runJobNow(job: Job, overrides?: JobRunOverrides): Promise<void> 
   return promise;
 }
 
+async function ensureDefaultJob(jobs: Job[]): Promise<Job[]> {
+  if (jobs.length > 0) return jobs;
+  if ((process.env.DEFAULT_SYNC_JOB_ENABLED ?? 'true').toLowerCase() === 'false') {
+    console.log('[Scheduler] No jobs configured; DEFAULT_SYNC_JOB_ENABLED=false so not creating one.');
+    return jobs;
+  }
+
+  const mailbox = process.env.DEFAULT_SYNC_MAILBOX ?? '[Gmail]/All Mail';
+  const cadencePreset = (process.env.DEFAULT_SYNC_CADENCE ?? '1h') as Job['cadencePreset'];
+  const sincePreset = (process.env.DEFAULT_SYNC_SINCE ?? '1d') as Job['sincePreset'];
+  const limit = Number(process.env.DEFAULT_SYNC_LIMIT ?? '250');
+  const intervalMinutes = Number(process.env.DEFAULT_SYNC_INTERVAL_MINUTES ?? '60');
+
+  const job = await createJob({
+    name: process.env.DEFAULT_SYNC_JOB_NAME ?? 'Hourly Gmail sync',
+    mailbox,
+    cadencePreset,
+    sincePreset,
+    intervalMinutes,
+    limit: Number.isFinite(limit) && limit > 0 ? limit : 250,
+    enabled: true,
+  });
+  console.log(
+    `[Scheduler] Created default job ${job.id} (${job.name}) — mailbox=${job.mailbox}` +
+    (job.cadencePreset ? ` cadence=${job.cadencePreset}` : '') +
+    (job.sincePreset ? ` since=${job.sincePreset}` : '')
+  );
+  return [job];
+}
+
 export async function startScheduler(): Promise<void> {
-  const jobs = await loadJobs();
+  const jobs = await ensureDefaultJob(await loadJobs());
   const enabledJobs = jobs.filter(j => j.enabled);
   console.log(`[Scheduler] Starting — ${jobs.length} total jobs, ${enabledJobs.length} enabled.`);
   for (const job of enabledJobs) {
     scheduleJob(job);
+  }
+
+  if ((process.env.DEFAULT_SYNC_RUN_ON_START ?? 'true').toLowerCase() !== 'false') {
+    for (const job of enabledJobs) {
+      console.log(`[Scheduler] Enqueueing startup run for ${job.id} (${job.name}).`);
+      runJobNow(job).catch((err: unknown) => console.error(`[Scheduler] startup run failed:`, err));
+    }
   }
 }
