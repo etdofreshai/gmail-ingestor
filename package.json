@@ -1,12 +1,13 @@
 {
   "name": "openclaw-email-ingestor",
   "version": "0.1.0",
-  "description": "Email ingester for OpenClaw — IMAP sync with Gmail",
+  "description": "Email ingester for OpenClaw \u2014 IMAP sync with Gmail",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "npm run build && node --test test/*.test.cjs"
   },
   "dependencies": {
     "@types/html-to-text": "^9.0.4",

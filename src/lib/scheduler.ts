@@ -14,6 +14,22 @@ import {
   type SincePreset,
 } from './since-presets';
 import { enqueue } from './scheduler-queue';
+import os from 'node:os';
+
+async function reportSync(job: Job, startedAt: string, error: string | null, counts?: object): Promise<void> {
+  try {
+    const base = process.env.MEMORY_DATABASE_API_URL!.replace(/\/+$/, '');
+    const token = process.env.MEMORY_DATABASE_API_WRITE_TOKEN || process.env.MEMORY_DATABASE_API_TOKEN;
+    const response = await fetch(`${base}/api/sync-state/${encodeURIComponent(`gmail:${os.hostname()}:${job.id}`)}`, {
+      method: 'PUT', headers: {'Content-Type':'application/json',Authorization:`Bearer ${token}`},
+      signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({source:'gmail',last_run_at:new Date().toISOString(),
+        ...(!error ? {last_sync_date:startedAt} : {}),error_message:error,
+        metadata:{ingestor:'gmail',job:job.name,mailbox:job.mailbox,...counts}}),
+    });
+    if (!response.ok) console.warn(`[Scheduler] Freshness report failed: HTTP ${response.status}`);
+  } catch { console.warn('[Scheduler] Unable to report freshness'); }
+}
 
 const jobTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -99,8 +115,10 @@ async function executeJob(job: Job, overrides?: JobRunOverrides): Promise<void> 
       verbose: true,
     });
 
+    if (!result.complete) throw new Error('Sync limit omitted older messages; checkpoint unchanged. Use limit 0 for a complete incremental sync.');
     const finishedAt = new Date().toISOString();
-    await updateJob(job.id, { lastStatus: 'success', lastRunAt: finishedAt, lastSyncedAt: finishedAt });
+    // Start time closes the race with messages arriving while this run is active.
+    await updateJob(job.id, { lastStatus: 'success', lastRunAt: finishedAt, lastSyncedAt: startedAt });
     await updateRun(run.runId, {
       finishedAt,
       status: 'success',
@@ -115,6 +133,7 @@ async function executeJob(job: Job, overrides?: JobRunOverrides): Promise<void> 
     console.log(
       `[Scheduler] Job ${job.id} done — fetched=${result.fetched} inserted=${result.inserted} updated=${result.updated}`
     );
+    await reportSync(job, startedAt, null, result);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     console.error(`[Scheduler] Job ${job.id} (${job.name}) failed: ${message}`);
@@ -124,6 +143,7 @@ async function executeJob(job: Job, overrides?: JobRunOverrides): Promise<void> 
       status: 'error',
       error: message,
     });
+    await reportSync(job, startedAt, message);
   }
 }
 
@@ -198,7 +218,7 @@ async function ensureDefaultJob(jobs: Job[]): Promise<Job[]> {
   const mailbox = process.env.DEFAULT_SYNC_MAILBOX ?? '[Gmail]/All Mail';
   const cadencePreset = (process.env.DEFAULT_SYNC_CADENCE ?? '1h') as Job['cadencePreset'];
   const sincePreset = (process.env.DEFAULT_SYNC_SINCE ?? '1d') as Job['sincePreset'];
-  const limit = Number(process.env.DEFAULT_SYNC_LIMIT ?? '250');
+  const limit = Number(process.env.DEFAULT_SYNC_LIMIT ?? '0');
   const intervalMinutes = Number(process.env.DEFAULT_SYNC_INTERVAL_MINUTES ?? '60');
 
   const job = await createJob({
@@ -207,7 +227,7 @@ async function ensureDefaultJob(jobs: Job[]): Promise<Job[]> {
     cadencePreset,
     sincePreset,
     intervalMinutes,
-    limit: Number.isFinite(limit) && limit > 0 ? limit : 250,
+    limit: Number.isFinite(limit) && limit >= 0 ? limit : 0,
     enabled: true,
   });
   console.log(

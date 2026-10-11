@@ -71,11 +71,12 @@ async function writeOneMessage(
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30000),
       });
     } catch (err: unknown) {
       if (attempt >= MAX_API_RETRIES) {
         console.error(`[api-writer] Network error for external_id=${payload.external_id} — exhausted retries:`, err);
-        return 'skipped';
+        throw new Error('Memory write was not confirmed');
       }
       await sleep(INITIAL_BACKOFF_MS * Math.pow(2, attempt));
       continue;
@@ -84,7 +85,7 @@ async function writeOneMessage(
     if (res.status === 429) {
       if (attempt >= MAX_API_RETRIES) {
         console.error(`[api-writer] 429 for external_id=${payload.external_id} — exhausted retries`);
-        return 'skipped';
+        throw new Error('Memory write was not confirmed');
       }
       const retryHeader = res.headers.get('retry-after') ?? '5';
       const waitMs = Math.ceil((parseFloat(retryHeader) || 5) * 1_000) + 500;
@@ -96,22 +97,24 @@ async function writeOneMessage(
     if (res.status >= 500) {
       if (attempt >= MAX_API_RETRIES) {
         console.error(`[api-writer] API error ${res.status} for external_id=${payload.external_id} — exhausted retries`);
-        return 'skipped';
+        throw new Error('Memory write was not confirmed');
       }
       await sleep(INITIAL_BACKOFF_MS * Math.pow(2, attempt));
       continue;
     }
 
-    if (res.status === 201) return 'inserted';
-    if (res.status === 200) return 'updated';
-    if (res.status === 409) return 'updated';
+    if (res.status === 200 || res.status === 201) {
+      const body = await res.json() as {record_id?: string; action?: string};
+      if (!body.record_id) throw new Error('Memory API returned no record ID');
+      return body.action === 'skipped' ? 'skipped' : res.status === 201 ? 'inserted' : 'updated';
+    }
 
     const body = await res.text().catch(() => '');
     console.error(`[api-writer] Unrecoverable API error ${res.status} for external_id=${payload.external_id}: ${body.slice(0, 200)}`);
-    return 'skipped';
+    throw new Error('Memory write was not confirmed');
   }
 
-  return 'skipped';
+  throw new Error('Memory write was not confirmed');
 }
 
 /**
@@ -153,6 +156,7 @@ async function ingestOneFile(
           'User-Agent': 'openclaw-gmail-ingestor/1.0',
         },
         body: form,
+        signal: AbortSignal.timeout(90000),
       });
 
       if (res.status === 429) {
@@ -168,6 +172,8 @@ async function ingestOneFile(
         throw new Error(`API returned ${res.status}: ${body.slice(0, 500)}`);
       }
 
+      const confirmed = await res.json() as {message?: {record_id?: string}};
+      if (!confirmed.message?.record_id) throw new Error('Attachment write was not confirmed');
       console.log(`[api-writer] ✓ Ingested attachment ${filename} for ${payload.external_id}`);
       return true;
     } catch (err: unknown) {
@@ -211,6 +217,8 @@ export async function writeMessagesViaApi(
         if (ok) {
           attachmentsIngested++;
           ingestedAny = true;
+        } else {
+          throw new Error('Attachment upload failed; sync checkpoint is unchanged');
         }
 
         // Small delay between attachment uploads to avoid throttling

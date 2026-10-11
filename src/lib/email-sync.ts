@@ -39,6 +39,7 @@ export interface SyncResult {
   attachmentsSeen: number;
   attachmentsIngested: number;
   mailbox: string;
+  complete: boolean;
 }
 
 /**
@@ -89,11 +90,13 @@ export async function syncEmails(options: SyncOptions = {}): Promise<SyncResult>
       log(`[email-sync] Found ${uids.length} emails matching criteria`);
 
       if (uids.length === 0) {
-        return { fetched: 0, inserted: 0, updated: 0, skipped: 0, attachmentsSeen: 0, attachmentsIngested: 0, mailbox };
+        return { fetched: 0, inserted: 0, updated: 0, skipped: 0, attachmentsSeen: 0, attachmentsIngested: 0, mailbox, complete: true };
       }
 
       // Sort UIDs descending (newest first) for limit to take newest
       uids.sort((a, b) => b - a);
+
+      const complete = !limit || limit <= 0 || uids.length <= limit;
 
       // Apply limit
       if (limit && limit > 0 && uids.length > limit) {
@@ -122,10 +125,10 @@ export async function syncEmails(options: SyncOptions = {}): Promise<SyncResult>
             if (normalized) {
               payloads.push(normalized);
               fetched++;
-            }
+            } else { throw new Error('Message source unavailable'); }
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
-            log(`[email-sync] Error normalizing UID ${msg.uid}: ${errMsg}`);
+            throw new Error(`Unable to normalize UID ${msg.uid}: ${errMsg}`);
           }
         }
 
@@ -144,6 +147,7 @@ export async function syncEmails(options: SyncOptions = {}): Promise<SyncResult>
         }
       }
 
+      if (fetched !== uids.length) throw new Error('IMAP fetch did not return every selected message; retry required');
       log(`[email-sync] Sync complete for ${mailbox}: ` +
         `fetched=${fetched} inserted=${totalResult.inserted} ` +
         `updated=${totalResult.updated} skipped=${totalResult.skipped} ` +
@@ -153,6 +157,7 @@ export async function syncEmails(options: SyncOptions = {}): Promise<SyncResult>
         fetched,
         ...totalResult,
         mailbox,
+        complete,
       };
     } finally {
       lock.release();
