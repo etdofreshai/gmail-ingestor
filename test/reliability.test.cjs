@@ -20,8 +20,11 @@ test('a confirmed existing record is a successful skip',async t=>{
 });
 test('a limited scan reports incomplete and an unlimited scan covers the whole window',async t=>{
  t.mock.method(imap,'createImapClient',async()=>({getMailboxLock:async()=>({release(){}}),search:async()=>[1,2,3],
-  fetch:async function*(uids){for(const uid of uids)yield{uid,source:Buffer.from('Subject: Test\r\n\r\nHello'),envelope:{date:new Date('2026-10-11T00:00:00Z')},flags:new Set()}},logout:async()=>{}}));
- t.mock.method(writer,'writeMessagesViaApi',async rows=>({inserted:rows.length,updated:0,skipped:0,attachmentsSeen:0,attachmentsIngested:0}));
+  fetch:async function*(uids){for(const uid of uids)yield{uid,threadId:'thread-42',source:Buffer.from('Subject: Test\r\n\r\nHello'),envelope:{date:new Date('2026-10-11T00:00:00Z')},flags:new Set()}},logout:async()=>{}}));
+ t.mock.method(writer,'writeMessagesViaApi',async rows=>{
+  assert.ok(rows.every(r=>r.payload.metadata.conversation_id==='gmail:thread-42'));
+  return {inserted:rows.length,updated:0,skipped:0,attachmentsSeen:0,attachmentsIngested:0};
+ });
  const limited=await syncEmails({limit:2});assert.equal(limited.fetched,2);assert.equal(limited.complete,false);
  const complete=await syncEmails({limit:0});assert.equal(complete.fetched,3);assert.equal(complete.complete,true);
 });

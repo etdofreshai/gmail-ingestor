@@ -119,6 +119,7 @@ export async function syncEmails(options: SyncOptions = {}): Promise<SyncResult>
           flags: true,
           source: true,
           uid: true,
+          threadId: true,
         }, { uid: true })) {
           try {
             const normalized = await normalizeEmail(msg, mailbox, includeAttachments, maxAttachmentSize);
@@ -260,6 +261,10 @@ async function normalizeEmail(
     external_id: externalId,
     metadata: {
       mailbox,
+      conversation_id: msg.threadId ? `gmail:${msg.threadId}` : null,
+      threadId: msg.threadId ?? null,
+      inReplyTo: parsed.inReplyTo ?? null,
+      references: parsed.references ?? null,
       subject,
       from: from ?? [],
       to: to ?? [],
